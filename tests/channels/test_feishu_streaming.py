@@ -1,9 +1,10 @@
 """Tests for Feishu streaming (send_delta) via CardKit streaming API."""
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.feishu import FeishuChannel, FeishuConfig, _FeishuStreamBuf
@@ -243,8 +244,11 @@ class TestSendMessageReturnsId:
     def test_returns_message_id_on_success(self):
         ch = _make_channel()
         ch._client.im.v1.message.create.return_value = _mock_send_response("om_abc")
-        result = ch._send_message_sync("chat_id", "oc_chat1", "text", '{"text":"hi"}')
+        with patch("nanobot.channels.feishu.uuid.uuid4", return_value="fixed-uuid"):
+            result = ch._send_message_sync("chat_id", "oc_chat1", "text", '{"text":"hi"}')
         assert result == "om_abc"
+        request = ch._client.im.v1.message.create.call_args[0][0]
+        assert request.body.uuid == "fixed-uuid"
 
     def test_returns_none_on_failure(self):
         ch = _make_channel()
@@ -256,3 +260,35 @@ class TestSendMessageReturnsId:
         ch._client.im.v1.message.create.return_value = resp
         result = ch._send_message_sync("chat_id", "oc_chat1", "text", '{"text":"hi"}')
         assert result is None
+
+    def test_retries_on_transient_ssl_error(self):
+        ch = _make_channel()
+        ch._client.im.v1.message.create.side_effect = [
+            requests.exceptions.SSLError("eof"),
+            requests.exceptions.ConnectionError("reset"),
+            _mock_send_response("om_retry"),
+        ]
+
+        with (
+            patch("nanobot.channels.feishu.uuid.uuid4", return_value="retry-uuid"),
+            patch("nanobot.channels.feishu.time.sleep") as mock_sleep,
+        ):
+            result = ch._send_message_sync("chat_id", "oc_chat1", "text", '{"text":"hi"}')
+
+        assert result == "om_retry"
+        assert ch._client.im.v1.message.create.call_count == 3
+        assert mock_sleep.call_count == 2
+        for call in ch._client.im.v1.message.create.call_args_list:
+            request = call[0][0]
+            assert request.body.uuid == "retry-uuid"
+
+    def test_returns_none_after_retry_budget_exhausted(self):
+        ch = _make_channel()
+        ch._client.im.v1.message.create.side_effect = requests.exceptions.Timeout("slow")
+
+        with patch("nanobot.channels.feishu.time.sleep") as mock_sleep:
+            result = ch._send_message_sync("chat_id", "oc_chat1", "text", '{"text":"hi"}')
+
+        assert result is None
+        assert ch._client.im.v1.message.create.call_count == ch._SEND_RETRY_ATTEMPTS
+        assert mock_sleep.call_count == ch._SEND_RETRY_ATTEMPTS - 1

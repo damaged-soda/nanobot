@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import requests
 from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
@@ -282,6 +283,8 @@ class FeishuChannel(BaseChannel):
     display_name = "Feishu"
 
     _STREAM_EDIT_INTERVAL = 0.5  # throttle between CardKit streaming updates
+    _SEND_RETRY_ATTEMPTS = 3
+    _SEND_RETRY_DELAY_S = 0.5
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
@@ -995,29 +998,45 @@ class FeishuChannel(BaseChannel):
     def _send_message_sync(self, receive_id_type: str, receive_id: str, msg_type: str, content: str) -> str | None:
         """Send a single message and return the message_id on success."""
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
-        try:
-            request = CreateMessageRequest.builder() \
-                .receive_id_type(receive_id_type) \
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(receive_id)
-                    .msg_type(msg_type)
-                    .content(content)
-                    .build()
-                ).build()
-            response = self._client.im.v1.message.create(request)
-            if not response.success():
-                logger.error(
-                    "Failed to send Feishu {} message: code={}, msg={}, log_id={}",
-                    msg_type, response.code, response.msg, response.get_log_id()
+        request_uuid = str(uuid.uuid4())
+        for attempt in range(1, self._SEND_RETRY_ATTEMPTS + 1):
+            try:
+                request = CreateMessageRequest.builder() \
+                    .receive_id_type(receive_id_type) \
+                    .request_body(
+                        CreateMessageRequestBody.builder()
+                        .receive_id(receive_id)
+                        .msg_type(msg_type)
+                        .content(content)
+                        .uuid(request_uuid)
+                        .build()
+                    ).build()
+                response = self._client.im.v1.message.create(request)
+                if not response.success():
+                    logger.error(
+                        "Failed to send Feishu {} message: code={}, msg={}, log_id={}",
+                        msg_type, response.code, response.msg, response.get_log_id()
+                    )
+                    return None
+                msg_id = getattr(response.data, "message_id", None)
+                logger.debug("Feishu {} message sent to {}: {}", msg_type, receive_id, msg_id)
+                return msg_id
+            except (
+                requests.exceptions.SSLError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+            ) as e:
+                if attempt >= self._SEND_RETRY_ATTEMPTS:
+                    logger.error("Error sending Feishu {} message after retries: {}", msg_type, e)
+                    return None
+                logger.warning(
+                    "Retrying Feishu {} message after transient error (attempt {}/{}): {}",
+                    msg_type, attempt, self._SEND_RETRY_ATTEMPTS, e,
                 )
+                time.sleep(self._SEND_RETRY_DELAY_S * attempt)
+            except Exception as e:
+                logger.error("Error sending Feishu {} message: {}", msg_type, e)
                 return None
-            msg_id = getattr(response.data, "message_id", None)
-            logger.debug("Feishu {} message sent to {}: {}", msg_type, receive_id, msg_id)
-            return msg_id
-        except Exception as e:
-            logger.error("Error sending Feishu {} message: {}", msg_type, e)
-            return None
 
     def _create_streaming_card_sync(self, receive_id_type: str, chat_id: str) -> str | None:
         """Create a CardKit streaming card, send it to chat, return card_id."""
