@@ -39,21 +39,28 @@
 
 ### Goal
 
-把 planner 出口的发消息路径改走显式 intent，真实发送由 effector 负责。
+把 planner 出口的发消息路径从无类型 `OutboundMessage` 升级为显式 `SendMessageIntent`，让 intent 和 effect 在类型和 trace 上都可分辨。
+
+### Phase 0 侦察带来的前提
+
+- Planner **已经**不直接调 `channel.send()`，而是调 `bus.publish_outbound(OutboundMessage(...))`，真实发送由 `channels/manager.py` 的 consumer 完成。Bus 本身就是一堵半成品的 effect 墙——Phase 1 的任务是给它加类型和 intent 语义，不是建新墙。
+- `MessageTool` 通过通用 callback 发消息（`send_callback: Callable`），类型上允许绕过 bus。未来新增的决策者工具（reminder、summarizer 等）也会遇到同类问题。
 
 ### Scope（概述）
 
-- 定义 `SendMessageIntent` 和 `NoReplyChosen`。
-- planner 出口由直接 `channel.send(...)` 改为产出 intent。
-- 新增 effector 作为薄 dispatcher，channel 内部 `send()` 保持不动。
+- 升级 `OutboundMessage` → `SendMessageIntent`（加 `trace_id` / `dedupe_key` / `origin` 等 intent 语义）。
+- 增加 `NoReplyChosen` 作为兄弟事件。
+- 约束跨副作用边界的 callback 签名为 intent producer，不再接受通用 `Callable`。`MessageTool` 是第一个适用点；此规则推广到所有类似的决策者工具。
+- Channel 内部 `send()` 一行不改。
 - CLI 作为唯一 simulate pilot：提供 recorder fake，live / simulate 共用一条链路结构。
-- 北极星场景：用户在 CLI 发消息，系统必须显式产出 reply intent 或 no-reply 决策；simulate 模式不产生真实输出。
+- 北极星场景：用户在 CLI 发消息，系统必须显式产出 `SendMessageIntent` 或 `NoReplyChosen`；simulate 模式不产生真实输出。
 
 ### Exit criteria
 
 - Trace 里能看到 intent 和 effect 是两个分开的事件。
 - CLI 上 live 模式行为与改造前一致。
 - CLI 上 simulate 模式能断言 send / no-send / exactly-once。
+- 跨副作用边界的 callback 都是 intent producer 类型，不存在裸 `Callable` 旁路。
 
 ## Phase 2：Cron 事件化
 
