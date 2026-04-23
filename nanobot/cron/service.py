@@ -10,7 +10,16 @@ from typing import Any, Callable, Coroutine, Literal
 
 from loguru import logger
 
-from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronRunRecord, CronSchedule, CronStore
+from nanobot.cron.types import (
+    Commitment,
+    CommitmentOrigin,
+    CronJob,
+    CronJobState,
+    CronPayload,
+    CronRunRecord,
+    CronSchedule,
+    CronStore,
+)
 from nanobot.trace import context as trace_context, emit as trace_emit
 
 
@@ -126,6 +135,20 @@ class CronService:
                                 for r in j.get("state", {}).get("runHistory", [])
                             ],
                         ),
+                        commitments=[
+                            Commitment(
+                                id=c["id"],
+                                text=c["text"],
+                                origin=c.get("origin", "user_request"),
+                                status=c.get("status", "active"),
+                                created_at_ms=c.get("createdAtMs", 0),
+                                source_trace_id=c.get("sourceTraceId"),
+                                revoked_at_ms=c.get("revokedAtMs"),
+                                revoked_reason=c.get("revokedReason"),
+                            )
+                            # 旧 jobs.json 没有 commitments 字段时默认为 []
+                            for c in j.get("commitments", [])
+                        ],
                         created_at_ms=j.get("createdAtMs", 0),
                         updated_at_ms=j.get("updatedAtMs", 0),
                         delete_after_run=j.get("deleteAfterRun", False),
@@ -182,6 +205,19 @@ class CronService:
                             for r in j.state.run_history
                         ],
                     },
+                    "commitments": [
+                        {
+                            "id": c.id,
+                            "text": c.text,
+                            "origin": c.origin,
+                            "status": c.status,
+                            "createdAtMs": c.created_at_ms,
+                            "sourceTraceId": c.source_trace_id,
+                            "revokedAtMs": c.revoked_at_ms,
+                            "revokedReason": c.revoked_reason,
+                        }
+                        for c in j.commitments
+                    ],
                     "createdAtMs": j.created_at_ms,
                     "updatedAtMs": j.updated_at_ms,
                     "deleteAfterRun": j.delete_after_run,
@@ -428,6 +464,77 @@ class CronService:
         """Get a job by ID."""
         store = self._load_store()
         return next((j for j in store.jobs if j.id == job_id), None)
+
+    # ========== Commitment CRUD ==========
+
+    def add_commitment(
+        self,
+        job_id: str,
+        text: str,
+        origin: CommitmentOrigin = "user_request",
+        source_trace_id: str | None = None,
+    ) -> Commitment | None:
+        """给 job 追加一条 active commitment。返回新 commitment；job 不存在返回 None。
+
+        id 和 timestamp 由本方法生成，避免调用方自己造重复 id。
+        """
+        store = self._load_store()
+        job = next((j for j in store.jobs if j.id == job_id), None)
+        if job is None:
+            return None
+        now = _now_ms()
+        commitment = Commitment(
+            id=str(uuid.uuid4())[:8],
+            text=text,
+            origin=origin,
+            status="active",
+            created_at_ms=now,
+            source_trace_id=source_trace_id,
+        )
+        job.commitments.append(commitment)
+        job.updated_at_ms = now
+        self._save_store()
+        return commitment
+
+    def revoke_commitment(
+        self,
+        job_id: str,
+        commitment_id: str,
+        reason: str | None = None,
+    ) -> Commitment | None:
+        """把 commitment 标记为 revoked。已经 revoked / merged 的返回当前对象不再改。
+
+        job 或 commitment 不存在返回 None。
+        """
+        store = self._load_store()
+        job = next((j for j in store.jobs if j.id == job_id), None)
+        if job is None:
+            return None
+        commitment = next((c for c in job.commitments if c.id == commitment_id), None)
+        if commitment is None:
+            return None
+        if commitment.status != "active":
+            return commitment
+        commitment.status = "revoked"
+        commitment.revoked_at_ms = _now_ms()
+        commitment.revoked_reason = reason
+        job.updated_at_ms = _now_ms()
+        self._save_store()
+        return commitment
+
+    def list_commitments(
+        self,
+        job_id: str,
+        status: str | None = "active",
+    ) -> list[Commitment]:
+        """列出 job 的 commitments。status=None 表示不过滤；默认只返回 active。"""
+        store = self._load_store()
+        job = next((j for j in store.jobs if j.id == job_id), None)
+        if job is None:
+            return []
+        if status is None:
+            return list(job.commitments)
+        return [c for c in job.commitments if c.status == status]
 
     def status(self) -> dict:
         """Get service status."""

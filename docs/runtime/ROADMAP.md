@@ -32,7 +32,7 @@
 
 ### Scope（概述）
 
-- `Commitment` **作为 `CronJob` 的一个字段**（不是独立实体）：稳定 id + prose text + 状态 + 审计字段 + verification_history。随 `jobs.json` 读写，旧 job 默认空 list。
+- `Commitment` **作为 `CronJob` 的一个字段**（不是独立实体）：稳定 id + prose text + 状态 + 创建/撤销审计字段（仅配置，不含 verification 日志）。随 `jobs.json` 读写，旧 job 默认空 list。每次 verify 的 verdict 走 `verification.completed` trace 事件流，不回写到 commitment——日志不应污染配置。
 - LLM 工具：`create_commitment` / `revoke_commitment` / `list_commitments`，统一通过 `CronService` 的 CRUD 方法操作。
 - Prompt builder：cron job 执行时把该 job 的 active commitments 注入 `on_cron_job` 构造的 prompt。
 - Simulate 机制：contextvar + 轻量 recorder，只在 `MessageTool` 的 send path 拦截；其他路径零改动。

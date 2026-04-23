@@ -53,29 +53,32 @@ Commitment **不是**独立实体。它是 `CronJob` 上的一个可演化字段
       "created_at_ms": 1779000000000,
       "source_trace_id": "xxx...",
       "revoked_at_ms": null,
-      "revoked_reason": null,
-      "verification_history": [
-        { "run_at_ms": ..., "run_kind": "simulate", "verdict": "pass", "detail": null },
-        { "run_at_ms": ..., "run_kind": "live",     "verdict": "fail", "detail": "..." }
-      ]
+      "revoked_reason": null
     }
   ],
   "state": {...}
 }
 ```
 
-**外壳结构化**：`id` / `origin` / `status` / `created_at_ms` / `verification_history` / ...
+**外壳结构化**：`id` / `origin` / `status` / `created_at_ms` / `revoked_*` / `source_trace_id`。
 **内容 prose**：`text` 字段。LLM 不预定义"append_exclusion"这种操作词汇——修改 = 新建 / revoke / supersede。
 
 **对称状态保证**：无论用户是"每天发新闻，不要神经科学"一次说完，还是先说"每天发新闻"后补"不要神经科学"，最终 job 的数据形态一致（`payload.message` 描述 + `commitments` 中一条关于神经科学的规则），避免"前者进 payload、后者进独立 store"的错位。
+
+**配置 / 日志分离**：commitment 本体是**配置**（用户定义的规则）。一次 verification 是**日志**（观察到的事件）。两者不能混在一份 JSON 里——日志会造成写放大（一条 verdict 改整份 jobs.json）、阅读污染（查规则得跳过日志）、与配置截然不同的 retention 语义。所以：
+
+- commitment 本体持久化在 `jobs.json` 的 `commitments` 字段
+- 每次 verify 的 verdict 通过 **trace 事件** `verification.completed` 流式暴露，作为可查询的时间流
+- simulate_job_run 工具的返回值里同步给 LLM 一份**当次** verdicts，供本 turn 内决策
+- "这条 commitment 过往兑现统计"属于 β 范畴；如果真做，用 trace-derived 或独立 JSONL 文件实现，不往回塞 `jobs.json`
 
 ### 2. 持久化 + 加载
 
 - **不新建存储**：commitments 是 `CronJob` 的一个 JSON 字段，随 `jobs.json` 整体读写，利用 `CronService._load_store` / `_save_store` 现有 pattern。
 - **旧数据兼容**：加载没有 `commitments` 字段的老 job 时默认为 `[]`。
-- **CRUD 入口**：在 `CronService` 上加 `add_commitment(job_id, commitment)` / `revoke_commitment(job_id, commitment_id, reason)` / `list_commitments(job_id, status)` / `append_verification(job_id, commitment_id, record)`，写完调 `_save_store`。
+- **CRUD 入口**：在 `CronService` 上加 `add_commitment(job_id, text, origin, source_trace_id)` / `revoke_commitment(job_id, commitment_id, reason)` / `list_commitments(job_id, status)`，写完调 `_save_store`。
 
-这样做避免了并列实体带来的一系列问题（独立文件锁、跨文件一致性、job 删除时 commitment 孤儿）。代价是 jobs.json 会变大；通过 `verification_history` 的上限（参照现有 `run_history` 的 `_MAX_RUN_HISTORY=20`）控制增长。
+这样做避免了并列实体带来的一系列问题（独立文件锁、跨文件一致性、job 删除时 commitment 孤儿）。
 
 ### 3. LLM 工具（3 个新 tool）
 
@@ -193,11 +196,12 @@ class Verdict:
    - Simulate 和真 cron 用 `process_direct(prompt, session_key=...)` 同一入口，simulate 用 `session_key="simulate:<job_id>"` 隔离历史。
 
 2. **Commitment 数据模型 + CronJob 字段扩展**：
-   - 在 `nanobot/cron/types.py` 加 `Commitment` / `CommitmentVerificationRecord` dataclass。
+   - 在 `nanobot/cron/types.py` 加 `Commitment` dataclass（仅配置字段，无 verification_history）。
+   - 同文件加 `CommitmentVerificationRecord` / `CommitmentRunKind` / `CommitmentVerdict` 类型——用于 simulate_job_run 的返回值和 trace event payload，不写回 Commitment。
    - 给 `CronJob` 加 `commitments: list[Commitment] = field(default_factory=list)`。
    - 扩展 `CronService._load_store` / `_save_store`：加载老数据时默认 `[]`；保存时 camelCase 化。
-   - 在 `CronService` 加 CRUD API：`add_commitment` / `revoke_commitment` / `list_commitments` / `append_verification`，内部统一调 `_save_store`。
-   - 单测：序列化往返、老 jobs.json 兼容加载、CRUD 语义。
+   - 在 `CronService` 加 CRUD API：`add_commitment` / `revoke_commitment` / `list_commitments`，内部统一调 `_save_store`。
+   - 单测：序列化往返、老 jobs.json 兼容加载、CRUD 语义、**jobs.json 不含 verification_history 字段**。
 
 3. **LLM 工具 3 个**：
    - 在 `nanobot/agent/tools/commitment.py` 新增 `CreateCommitmentTool` / `RevokeCommitmentTool` / `ListCommitmentsTool`。
@@ -240,7 +244,8 @@ class Verdict:
 - `simulate_job_run(job_id)` 产出 `(outputs, verdicts)`；verdicts 对 active commitments 逐条返回 pass/fail。
 - MessageTool 在 simulate 模式下**不**触达真 channel（计数真 send 为 0，recorder 有捕获）。
 - 整个链路 trace_id 贯穿：`commitment.created` → `job.simulated` → planner / tool / memory / send path 拦截 → `verification.completed`。
-- jobs.json 写回后重新加载，commitments 字段及 verification_history 完整保留（序列化往返测试）。
+- jobs.json 写回后重新加载，commitments 字段完整保留（序列化往返测试）。
+- jobs.json 中**不**出现 `verification_history` / `verificationHistory` 字段（配置/日志分离的硬约束）。
 - 加载不含 `commitments` 字段的老 jobs.json 时不报错，job.commitments 自动为 `[]`。
 - 全量测试 + Phase 0 已有场景无回归。
 
