@@ -4,7 +4,7 @@
 
 ## 第一步：识别任务属于哪一边
 
-- **Kernel 工作**：新内核路线相关的改造，包括 agent loop 行为、event 模型、副作用边界、观测 / trace、仿真 / replay、资源归属、新内核文档与 PLAN。
+- **Kernel 工作**：新内核路线相关的改造，包括 agent loop 行为、承诺资源、副作用拦截 / 仿真、观测 / trace、验证循环、新内核文档与 PLAN。
   → 执行下面的 **Kernel 规则**。
 
 - **Shell 工作**：channel adapter、provider、workspace、tool、skill、上游 sync、常规 bug 修复与功能迭代。
@@ -16,7 +16,9 @@
 
 ### Mission
 
-保留 nanobot shell，把 runtime 逐步演进为 event-sourced、effect-isolated、可仿真、可验证的新内核。当前第一步是让系统可观测（Phase 0）。
+保留 nanobot shell，把 runtime 逐步演进为**可观测、可仿真、可自验证**的新内核。核心 thesis：LLM 必须能在 turn 内验证自己对未来行为的修改，不靠等真 cron 跑完事后复盘。
+
+Phase 0（observability）已完成。当前 Phase 1 focus 是"承诺资源化 + Simulate 能力"。
 
 ### 开始任何 Kernel 任务前必读
 
@@ -27,22 +29,23 @@
 
 ### 硬性规则：始终适用
 
-- **不超前设计**：没有代码承载的抽象、目录、catalog、schema 不写进文档。
+- **不超前设计**：没有代码承载的抽象、目录、catalog、schema 不写进文档。Phase 1 第一版因违反这条踩过一次坑（effector 整层建了又删），引以为戒。
 - **不绕过原则**：如果某条计划和 `PRINCIPLES.md` 冲突，先讨论修改原则，不允许在计划里偷偷绕过。
 - **不把 `turn` 当系统中心**：新增代码路径时不要强化 turn-centric 假设。
-- **不把 job 专属约束写入 global memory**：即使当前还没有 `JobSpec`，也不要反向强化错位。
+- **不把影响未来执行的规则写进 memory**：持久承诺必须走结构化 Commitment。memory 只承担短期会话工作记忆。
 
-### 硬性规则：Phase 0 专属
+### 硬性规则：Phase 1 专属
 
-- **只加观测，不改行为**：Phase 0 期间任何改动必须是"插桩"性质。planner、channel 内部、provider、memory 语义一律不动。
-- **Trace 结构稳定优先**：trace 事件结构（顶层字段）变更需要谨慎，它会演进为未来 event log。
+- **MessageTool 的 send path 是 simulate 的唯一陷阱点**：在此处插 contextvar 拦截。不要把拦截扩散到 bus / channel / manager，否则破坏"channel 内部零改动"的承诺。
+- **Trace 结构稳定优先**：顶层字段（`ts` / `run_id` / `trace_id` / `kind` / `payload`）不动；新增 kind 按 Phase 0 沿用的 dotted-name 惯例。
+- **simulate 的副作用假设要显式**：如果某段 job 执行路径包含非 read-only 副作用（写外部状态、调不可逆 API），不能默认认为它可以被 simulate——需要在 PLAN 或 STATUS 中列为 known limitation。
 
 ### Kernel 任务完成标准
 
 - 相关测试或验收检查通过。
 - 对应 STATUS / ROADMAP / PLAN 已同步更新。
-- 没有新增 source-of-truth 歧义。
-- 没有新增 planner 直接副作用（Phase 0 应该一个都没有）。
+- 没有新增 source-of-truth 歧义（特别是承诺类信息只在 commitment store 里有一份）。
+- 没有新增 "不通过 MessageTool 的真 channel send"。
 
 ## 通用规则（两边都适用）
 
@@ -55,7 +58,7 @@
 ### 文档纪律
 
 - 不主动扩写文档。
-- `docs/new-kernel/` 目前是 6 个文件（README / PRINCIPLES / ROADMAP / STATUS / AGENTS 已合并到根目录本文件 / plans/PLAN-phase0-observability.md）。不要新增文件或目录，PLAN 除外，且只为当前或下一个 Phase 写。
+- `docs/new-kernel/` 目前是这些文件：`README.md` / `PRINCIPLES.md` / `ROADMAP.md` / `STATUS.md` / `plans/PLAN-phase0-observability.md`（历史存档）/ `plans/PLAN-phase1-commitments.md`（当前）。不要新增文件或目录，PLAN 除外，且只为当前或下一个 Phase 写。
 - 没有要求时不要生成 CHANGELOG、README 更新、架构决策记录。
 
 ### Git 规则
@@ -70,7 +73,7 @@
 - 优先小步、可回滚、可验证的改动。
 - 不要为了让测试过而引入隐式状态。
 - 不要留下未解释的临时分支、死代码或兼容路径。
-- 插桩或改造时，保持 live path 与 simulate path 结构一致（simulate 在 Phase 1 才真正出现，但现在的选择就要为它铺路）。
+- 插桩或改造时，保持 live path 与 simulate path 结构一致。simulate 在 Phase 1 落地；不要在代码里做"live 和 simulate 分叉"的判断，一切通过统一陷阱点（contextvar）自然切换。
 
 ## 文档事实来源（Kernel）
 
@@ -78,4 +81,4 @@
 - 架构原则：`docs/new-kernel/PRINCIPLES.md`
 - 当前在做什么：`docs/new-kernel/STATUS.md`
 - 阶段路线：`docs/new-kernel/ROADMAP.md`
-- 当前 PLAN：`docs/new-kernel/plans/PLAN-phase0-observability.md`
+- 当前 PLAN：`docs/new-kernel/plans/PLAN-phase1-commitments.md`

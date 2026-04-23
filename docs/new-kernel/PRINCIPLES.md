@@ -6,7 +6,7 @@
 
 nanobot 的产品外壳继续与上游对齐，是这个 fork 的复用资产：CLI、channel adapter、provider、workspace、tool、skill。
 
-真正重做的是 runtime kernel：事件模型、副作用边界、观测、仿真、验证。
+真正重做的是 runtime kernel：观测、承诺存储、仿真、验证。
 
 把精力花在 shell 上是浪费，因为上游会继续演进；把精力花在 kernel 上才是这个 fork 存在的理由。
 
@@ -14,38 +14,48 @@ nanobot 的产品外壳继续与上游对齐，是这个 fork 的复用资产：
 
 任何结构性改动，必须先让被改动的区域在 trace 里完全可见，再动结构。
 
-原因：内部重构对外行为不变，没有观测就没有安全网，改动前后我们说不清哪里变了、哪里没变。把"观测"作为 Phase 0，是因为它既是安全网，也是未来 event log 的雏形，投入不会浪费。
+原因：内部重构对外行为不变，没有观测就没有安全网，改动前后我们说不清哪里变了、哪里没变。Phase 0 已经把这件事做到位，它同时是未来 event log / replay 的载体。
 
-## 3. Event / Intent / Effect 三分
+## 3. 持久承诺是一等资源
 
-- **Event**：已经发生的事实，命名用过去式，例如 `UserMessageReceived`。
-- **Intent**：系统准备做的动作，命名以 `Intent` 结尾，例如 `SendMessageIntent`。
-- **Effect**：外部世界或持久状态实际发生的结果，例如 `MessageSent`。
+会影响未来自动执行的规则（"briefing 排除神经科学"、"盯住 $10M 以上空投"、"每天 9 点发"），**必须**有显式的结构化身份和生命周期，不能以"memory 里一段散文"的形态落地。
 
-Event 表示"发生了什么"，Intent 表示"打算做什么"，Effect 表示"真做了什么"。三者不混用，也不能用 memory / log / context 这些万能词替代。
+- 外壳结构化：id / 归属 / 状态 / 创建时机 / 审计历史。
+- 内容可以是 prose：规则本身用自然语言，不强拆 DSL。
+- 修改 = 显式操作（新建 / revoke / supersede），不是往 memory 追加一行。
 
-## 4. Turn 不是中心
+这让"我告诉它的规则"和"它记下的工作笔记"在**系统层面**区分开——LLM 没得偷懒。
 
-用户消息、cron tick、工具返回、外部采集结果都是 event，不是某一次 turn 的附属物。旧 `AgentLoop` 的"一次 turn"只是一种 event 消费模式，不是系统中心抽象。
+## 4. LLM 必须能在 turn 内验证自己对未来的修改
 
-## 5. Planner 不直接产生副作用（目标）
+改完规则后"下一次那个任务真跑时会不会按我改的来"这个问题，LLM 必须能在**当前这一轮**得到答案。不能等真 cron 触发后事后复盘——对 LLM 而言那等于没有反馈。
 
-决策者（planner / summarizer / memory reducer）只能产出 event 或 intent，不能直接调 channel、写文件、调外部 API。真实副作用由 effector 消费 intent 后执行。
+实现形态：一个可调用的 `simulate_job_run` 工具，跑完整执行链路但真实副作用被拦截；一次干净的 verification LLM 调用做自评。
 
-这是目标状态，当前代码尚未满足。Phase 1 处理 outbound 这一类最常见的副作用。
+这是整个 kernel 改造的首要 thesis。其他机制（承诺资源化、副作用拦截、可重放 context）都是这条要求的**前提条件**。
 
-## 6. 持久约束必须有显式 owner（目标）
+## 5. 副作用必须有可拦截的单一陷阱点
 
-会影响未来自动执行的信息，必须归属到具名 resource（未来可能是 `JobSpec` / `UserProfile` / `ProjectRules` 等）。memory 不是万能存储。
+为了 simulate 能跑，**产生真实外部效果**的路径（发消息、改外部状态、调外部 API）必须经过一个**集中的陷阱点**，能被 contextvar / flag 轻量拦截。
 
-这是目标状态，当前仓库不强制此规则，但新增代码路径时应避免把 job 专属约束写入 global memory。
+当前最重要的陷阱点是 `MessageTool` 的 send path。其他副作用（file write、shell exec、web fetch 等）在 α 阶段允许真实发生——simulate 假设 job 的执行体是 read-only-ish。超出此假设的 job 暂时不适合 simulate，相关 job 在产物中应明确标注。
 
-## 7. Simulation 与 Replay 是一级能力
+## 6. Turn 不是系统中心
 
-同一条事件链应能在 live / simulate / replay 三种模式下运行，结构一致。仿真不是 debug 附件，而是验证基础设施。Phase 0 的 trace 格式同时作为 replay 的载体。
+用户消息、cron tick、simulate 调用、verification 结果都是独立的事件或动作，不是某一次 turn 的附属物。旧 `AgentLoop` 的"一次 turn"只是一种事件消费模式，不是核心抽象。
+
+新增代码路径时不要强化 turn-centric 假设。
+
+## 7. Simulate / Verify 不是 debug 附件
+
+Simulate 是 LLM 日常决策循环的一部分，不是"调试时才打开的开关"。同理，verification 不是"上线前跑一次的检查"，是"每次修改后 LLM 自己要跑的一次自评"。
+
+这一条决定了 simulate 和 verify 必须**轻量、可重复、可组合**。
 
 ## 8. 不超前设计
 
 文档只描述当前阶段有代码承载或即将承载的东西。没有代码的抽象、目录、catalog、schema 不写进文档。
 
 原因：空定义会随实现变形，维护纪律的成本高过价值。需要时再写，宁可晚不要早。
+
+（本仓库已经在 Phase 1 第一版 PLAN 上踩过一次这个坑——原设计为"不存在的问题"建了一层 effector 抽象，后来整层删除。代价是几百行代码和一次文档回滚。）

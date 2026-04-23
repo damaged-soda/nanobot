@@ -2,10 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
-
-
-IntentOrigin = Literal["planner", "tool", "system", "command"]
+from typing import Any
 
 
 @dataclass
@@ -39,39 +36,3 @@ class OutboundMessage:
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     trace_id: str | None = None  # Observability: propagates across the bus task boundary
-
-
-@dataclass
-class SendMessageIntent:
-    """planner / tool 决定"发一条用户可见消息"的意图。
-
-    与 :class:`OutboundMessage` 刻意分开：intent 是 planner 决定要做什么，
-    effector 负责把它落到真正的 channel send。simulate 模式下 effector 只记录
-    intent，不真的发出去。
-    """
-
-    channel: str
-    chat_id: str
-    content: str
-    reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    trace_id: str | None = None
-    dedupe_key: str | None = None  # 同一个 key 出现两次 = 重复 intent（测试可断言）
-    origin: IntentOrigin = "planner"
-
-
-@dataclass
-class NoReplyChosen:
-    """planner / tool 决定本轮"不回复"的意图。
-
-    把"选择沉默"做成显式事件，simulate 测试才能区分"主动决定不回复"和
-    "还在处理中 / 崩了"。
-    """
-
-    trace_id: str | None = None
-    reason: str | None = None
-    origin: IntentOrigin = "planner"
-
-
-Intent = SendMessageIntent | NoReplyChosen
