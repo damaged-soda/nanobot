@@ -11,6 +11,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
+from nanobot.trace import context as trace_context, emit as trace_emit
 from nanobot.utils.restart import consume_restart_notice_from_env, format_restart_completed_message
 
 # Retry delays for message sending (exponential backoff: 1s, 2s, 4s)
@@ -190,10 +191,18 @@ class ChannelManager:
     @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send one outbound message without retry policy."""
-        if msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
-            await channel.send_delta(msg.chat_id, msg.content, msg.metadata)
-        elif not msg.metadata.get("_streamed"):
-            await channel.send(msg)
+        with trace_context(trace_id=msg.trace_id):
+            if msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
+                # Phase 0 gap: per-delta / stream-end not emitted as channel.sent.
+                await channel.send_delta(msg.chat_id, msg.content, msg.metadata)
+            elif not msg.metadata.get("_streamed"):
+                await channel.send(msg)
+                trace_emit(
+                    "channel.sent",
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content_len=len(msg.content or ""),
+                )
 
     def _coalesce_stream_deltas(
         self, first_msg: OutboundMessage

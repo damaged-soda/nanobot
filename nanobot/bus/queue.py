@@ -3,6 +3,7 @@
 import asyncio
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.trace import get_trace_id
 
 
 class MessageBus:
@@ -18,7 +19,13 @@ class MessageBus:
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
-        """Publish a message from a channel to the agent."""
+        """Publish a message from a channel to the agent.
+
+        Auto-stamps the current trace_id onto the message so it survives the
+        asyncio.Queue boundary into the consumer task.
+        """
+        if msg.trace_id is None:
+            msg.trace_id = get_trace_id()
         await self.inbound.put(msg)
 
     async def consume_inbound(self) -> InboundMessage:
@@ -26,7 +33,13 @@ class MessageBus:
         return await self.inbound.get()
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Publish a response from the agent to channels."""
+        """Publish a response from the agent to channels.
+
+        Auto-stamps the current trace_id onto the message so it survives the
+        asyncio.Queue boundary into the outbound dispatcher task.
+        """
+        if msg.trace_id is None:
+            msg.trace_id = get_trace_id()
         await self.outbound.put(msg)
 
     async def consume_outbound(self) -> OutboundMessage:

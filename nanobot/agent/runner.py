@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.trace import emit as trace_emit
 from nanobot.utils.prompt_templates import render_template
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, ToolCallRequest
@@ -381,6 +382,11 @@ class AgentRunner:
         external_lookup_counts: dict[str, int],
     ) -> tuple[Any, dict[str, str], BaseException | None]:
         _HINT = "\n\n[Analyze the error above and try a different approach.]"
+        try:
+            args_size = len(json.dumps(tool_call.arguments or {}, ensure_ascii=False, default=str))
+        except Exception:
+            args_size = -1
+        trace_emit("tool.called", name=tool_call.name, args_size=args_size)
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
             tool_call.arguments,
@@ -392,6 +398,7 @@ class AgentRunner:
                 "status": "error",
                 "detail": "repeated external lookup blocked",
             }
+            trace_emit("tool.returned", **event)
             if spec.fail_on_tool_error:
                 return lookup_error + _HINT, event, RuntimeError(lookup_error)
             return lookup_error + _HINT, event, None
@@ -410,6 +417,7 @@ class AgentRunner:
                 "status": "error",
                 "detail": prep_error.split(": ", 1)[-1][:120],
             }
+            trace_emit("tool.returned", **event)
             return prep_error + _HINT, event, RuntimeError(prep_error) if spec.fail_on_tool_error else None
         try:
             if tool is not None:
@@ -424,6 +432,7 @@ class AgentRunner:
                 "status": "error",
                 "detail": str(exc),
             }
+            trace_emit("tool.returned", **event)
             if spec.fail_on_tool_error:
                 return f"Error: {type(exc).__name__}: {exc}", event, exc
             return f"Error: {type(exc).__name__}: {exc}", event, None
@@ -434,6 +443,7 @@ class AgentRunner:
                 "status": "error",
                 "detail": result.replace("\n", " ").strip()[:120],
             }
+            trace_emit("tool.returned", **event)
             if spec.fail_on_tool_error:
                 return result + _HINT, event, RuntimeError(result)
             return result + _HINT, event, None
@@ -444,7 +454,9 @@ class AgentRunner:
             detail = "(empty)"
         elif len(detail) > 120:
             detail = detail[:120] + "..."
-        return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
+        event = {"name": tool_call.name, "status": "ok", "detail": detail}
+        trace_emit("tool.returned", **event)
+        return result, event, None
 
     async def _emit_checkpoint(
         self,

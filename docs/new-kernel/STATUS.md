@@ -2,45 +2,51 @@
 
 ## 当前阶段
 
-Phase 0：Observability scaffold。
+Phase 0 **已完成**。下一步是 Phase 1（Outbound effect isolation），PLAN 尚未撰写。
 
-## 当前焦点
+## Phase 0 成果
 
-建立 trace 基础设施并在当前系统关键边界注入观测点，**不改任何现有行为**。
+Trace scaffold 已落地，在六类边界发射事件：
 
-详细任务见 [`plans/PLAN-phase0-observability.md`](./plans/PLAN-phase0-observability.md)。
+- `channel.received`（CLI 入口，`cli/commands.py` + `channels/base.py` 的 `_handle_message` 是统一口，其它 channel 暂不逐个插）
+- `planner.entered` / `planner.exited`（`agent/loop.py:_run_agent_loop`）
+- `tool.called` / `tool.returned`（`agent/runner.py:_run_tool`）
+- `channel.sent`（非 CLI 走 `channels/manager.py:_send_once`；CLI 走 `cli/commands.py:_consume_outbound`）
+- `memory.read` / `memory.write`（`agent/memory.py:MemoryStore`）
+- `cron.fired`（`cron/service.py:_execute_job`）
 
-## 本阶段范围
+trace_id 传递机制：
+- 同 task 内：`contextvars`（planner / tool / memory 链）
+- 跨 task（bus 队列）：作为数据字段存在 `InboundMessage.trace_id` / `OutboundMessage.trace_id`，`MessageBus.publish_inbound/outbound` 在 producer 未显式设置时自动从 contextvar 捕获
+- cron 路径：`_execute_job` 起点生成 trace_id，通过 contextvar 贯通到 `process_direct` → `_run_agent_loop`
 
-见 [`ROADMAP.md`](./ROADMAP.md) 的 Phase 0 一节。简述：
+验收：
+- CLI 端到端 integration test：一条消息产生 `channel.received` → `planner.entered` → `planner.exited` → `channel.sent` 共享同一 trace_id
+- Cron 路径 integration test：`cron.fired` → `planner.entered` / `planner.exited` 共享 trace_id
+- 15 个 trace 模块单测 + 2 个 integration test 全部通过
 
-- 定义 trace 事件结构 + `emit` API + 默认 sink。
-- 在六类边界注入 trace：channel 入口 / planner 入出 / tool 前后 / channel 出口 / memory 读写 / cron 触发。
-- 不新增行为、不重构现有路径。
+## 与原 PLAN 的偏离
 
-## 验收标准
+- **Sink 默认**：原 PLAN 写 "默认 stdout JSONL"。实际实现为 **env 门控，默认无 sink**：
+  - `NANOBOT_TRACE=1` → JSONL 写 stderr（observability 惯例流，不污染 CLI 的 stdout Markdown 渲染）
+  - `NANOBOT_TRACE_FILE=path` → JSONL 追加到文件
+  - 两个都不设 → 零 sink，`emit` 近似 no-op
 
-- CLI 发一条用户消息 → 产出一份完整可读的 trace，覆盖 channel 接收 → planner → tool → 发送全链路。
-- Cron tick 能产生对应 trace。
-- trace 结构稳定，足以承载 Phase 1 引入的 intent/effect 事件。
+## 已知 gap（后续 Phase 视情况补齐）
+
+- **Streaming 出口**：`send_delta` 路径（telegram / feishu / matrix 流式）未发射 `channel.sent`，只有非流式 `send` 路径覆盖。
+- **Slash command / Heartbeat / Subagent → system channel**：这些 OutboundMessage producer 当前不在 trace context 下运行，bus auto-capture 拿不到 trace_id，链路断开。Phase 0 明确选择不覆盖。
+- **Dream 内部**：`agent.dream.run()` 被 cron 触发后继承 trace_id（memory 读写会带），但 Dream 自己的 AgentRunner 执行不发 `planner.*` 事件。
 
 ## 冻结区域
 
-Phase 0 期间不动：
+Phase 0 期间未动（仍冻结到下一步明确放开前）：
 
-- planner / agent loop 的决策逻辑。
-- channel 内部 `send()` 实现。
-- provider 层。
-- memory 系统语义。
-- 上游 sync 策略。
-
-任何超出"加观测"范围的改动都不属于 Phase 0。
-
-## 已知风险
-
-- 某些路径（例如工具调用、长流式输出）可能已经隐含副作用，插桩时需要注意不引入重复或遗漏。
-- 某些 channel 的 send 调用点分散，初版插桩可能不完整，以 CLI 为准保证北极星场景覆盖即可，其他 channel 允许后续补齐。
-- contextvar 在异步 / 多线程 / streaming 路径下的传递需要验证。
+- planner / agent loop 的决策逻辑
+- channel 内部 `send()` 实现
+- provider 层
+- memory 系统语义
+- 上游 sync 策略
 
 ## 最后更新
 

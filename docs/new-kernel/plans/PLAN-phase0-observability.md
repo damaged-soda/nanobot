@@ -35,9 +35,12 @@ trace 事件是一条 JSON：
 
 ### Sinks
 
-- 默认：stdout JSONL。
-- 可选：文件 JSONL，通过环境变量 `NANOBOT_TRACE_FILE` 启用。
+- 默认：**无 sink**。`emit` 仍能安全调用，开销接近 no-op。
+- `NANOBOT_TRACE=1` → JSONL 写 **stderr**（observability 惯例流，不污染 CLI 的 stdout 渲染；便于 `2>trace.jsonl | jq` 之类的 pipeline）。
+- `NANOBOT_TRACE_FILE=path` → JSONL 追加到文件。
 - 测试用：null sink。
+
+（原文本写的是 "默认 stdout JSONL"；落地时改为 env 门控 stderr，避免 CLI 交互模式被 JSONL 冲掉 rich 渲染。）
 
 初版不做异步写入、不做缓冲、不做压缩。一行一写，简单优先。
 

@@ -36,6 +36,7 @@ from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
+from nanobot.trace import context as trace_context, emit as trace_emit, init_run as trace_init_run
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.utils.restart import (
     consume_restart_notice_from_env,
@@ -49,6 +50,7 @@ app = typer.Typer(
     help=f"{__logo__} nanobot - Personal AI Assistant",
     no_args_is_help=True,
 )
+
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
@@ -246,7 +248,8 @@ def main(
     ),
 ):
     """nanobot - Personal AI Assistant."""
-    pass
+    trace_init_run()
+    trace_emit("runtime.started", version=__version__)
 
 
 # ============================================================================
@@ -977,41 +980,61 @@ def agent(
                     try:
                         msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
 
-                        if msg.metadata.get("_stream_delta"):
-                            if renderer:
-                                await renderer.on_delta(msg.content)
-                            continue
-                        if msg.metadata.get("_stream_end"):
-                            if renderer:
-                                await renderer.on_end(
-                                    resuming=msg.metadata.get("_resuming", False),
+                        with trace_context(trace_id=msg.trace_id):
+                            if msg.metadata.get("_stream_delta"):
+                                if renderer:
+                                    await renderer.on_delta(msg.content)
+                                continue
+                            if msg.metadata.get("_stream_end"):
+                                if renderer:
+                                    await renderer.on_end(
+                                        resuming=msg.metadata.get("_resuming", False),
+                                    )
+                                continue
+                            if msg.metadata.get("_streamed"):
+                                trace_emit(
+                                    "channel.sent",
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content_len=0,
+                                    streamed=True,
                                 )
-                            continue
-                        if msg.metadata.get("_streamed"):
-                            turn_done.set()
-                            continue
+                                turn_done.set()
+                                continue
 
-                        if msg.metadata.get("_progress"):
-                            is_tool_hint = msg.metadata.get("_tool_hint", False)
-                            ch = agent_loop.channels_config
-                            if ch and is_tool_hint and not ch.send_tool_hints:
-                                pass
-                            elif ch and not is_tool_hint and not ch.send_progress:
-                                pass
-                            else:
-                                await _print_interactive_progress_line(msg.content, _thinking)
-                            continue
+                            if msg.metadata.get("_progress"):
+                                is_tool_hint = msg.metadata.get("_tool_hint", False)
+                                ch = agent_loop.channels_config
+                                if ch and is_tool_hint and not ch.send_tool_hints:
+                                    pass
+                                elif ch and not is_tool_hint and not ch.send_progress:
+                                    pass
+                                else:
+                                    await _print_interactive_progress_line(msg.content, _thinking)
+                                continue
 
-                        if not turn_done.is_set():
-                            if msg.content:
-                                turn_response.append((msg.content, dict(msg.metadata or {})))
-                            turn_done.set()
-                        elif msg.content:
-                            await _print_interactive_response(
-                                msg.content,
-                                render_markdown=markdown,
-                                metadata=msg.metadata,
-                            )
+                            if not turn_done.is_set():
+                                trace_emit(
+                                    "channel.sent",
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content_len=len(msg.content or ""),
+                                )
+                                if msg.content:
+                                    turn_response.append((msg.content, dict(msg.metadata or {})))
+                                turn_done.set()
+                            elif msg.content:
+                                trace_emit(
+                                    "channel.sent",
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content_len=len(msg.content or ""),
+                                )
+                                await _print_interactive_response(
+                                    msg.content,
+                                    render_markdown=markdown,
+                                    metadata=msg.metadata,
+                                )
 
                     except asyncio.TimeoutError:
                         continue
@@ -1041,15 +1064,24 @@ def agent(
                         turn_response.clear()
                         renderer = StreamRenderer(render_markdown=markdown)
 
-                        await bus.publish_inbound(InboundMessage(
-                            channel=cli_channel,
-                            sender_id="user",
-                            chat_id=cli_chat_id,
-                            content=user_input,
-                            metadata={"_wants_stream": True},
-                        ))
+                        with trace_context() as trace_id:
+                            trace_emit(
+                                "channel.received",
+                                channel=cli_channel,
+                                sender_id="user",
+                                chat_id=cli_chat_id,
+                                content_len=len(user_input),
+                            )
+                            await bus.publish_inbound(InboundMessage(
+                                channel=cli_channel,
+                                sender_id="user",
+                                chat_id=cli_chat_id,
+                                content=user_input,
+                                metadata={"_wants_stream": True},
+                                trace_id=trace_id,
+                            ))
 
-                        await turn_done.wait()
+                            await turn_done.wait()
 
                         if turn_response:
                             content, meta = turn_response[0]

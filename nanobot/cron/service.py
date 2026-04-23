@@ -11,6 +11,7 @@ from typing import Any, Callable, Coroutine, Literal
 from loguru import logger
 
 from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronRunRecord, CronSchedule, CronStore
+from nanobot.trace import context as trace_context, emit as trace_emit
 
 
 def _now_ms() -> int:
@@ -267,18 +268,25 @@ class CronService:
         start_ms = _now_ms()
         logger.info("Cron: executing job '{}' ({})", job.name, job.id)
 
-        try:
-            if self.on_job:
-                await self.on_job(job)
+        with trace_context() as trace_id:
+            trace_emit(
+                "cron.fired",
+                job_id=job.id,
+                job_name=job.name,
+                schedule_kind=job.schedule.kind,
+            )
+            try:
+                if self.on_job:
+                    await self.on_job(job)
 
-            job.state.last_status = "ok"
-            job.state.last_error = None
-            logger.info("Cron: job '{}' completed", job.name)
+                job.state.last_status = "ok"
+                job.state.last_error = None
+                logger.info("Cron: job '{}' completed", job.name)
 
-        except Exception as e:
-            job.state.last_status = "error"
-            job.state.last_error = str(e)
-            logger.error("Cron: job '{}' failed: {}", job.name, e)
+            except Exception as e:
+                job.state.last_status = "error"
+                job.state.last_error = str(e)
+                logger.error("Cron: job '{}' failed: {}", job.name, e)
 
         end_ms = _now_ms()
         job.state.last_run_at_ms = start_ms

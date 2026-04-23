@@ -17,6 +17,7 @@ from nanobot.utils.helpers import ensure_dir, estimate_message_tokens, estimate_
 
 from nanobot.agent.runner import AgentRunSpec, AgentRunner
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.trace import emit as trace_emit
 from nanobot.utils.gitstore import GitStore
 
 if TYPE_CHECKING:
@@ -191,26 +192,35 @@ class MemoryStore:
     # -- MEMORY.md (long-term facts) -----------------------------------------
 
     def read_memory(self) -> str:
-        return self.read_file(self.memory_file)
+        content = self.read_file(self.memory_file)
+        trace_emit("memory.read", key="MEMORY", bytes=len(content))
+        return content
 
     def write_memory(self, content: str) -> None:
         self.memory_file.write_text(content, encoding="utf-8")
+        trace_emit("memory.write", key="MEMORY", bytes=len(content))
 
     # -- SOUL.md -------------------------------------------------------------
 
     def read_soul(self) -> str:
-        return self.read_file(self.soul_file)
+        content = self.read_file(self.soul_file)
+        trace_emit("memory.read", key="SOUL", bytes=len(content))
+        return content
 
     def write_soul(self, content: str) -> None:
         self.soul_file.write_text(content, encoding="utf-8")
+        trace_emit("memory.write", key="SOUL", bytes=len(content))
 
     # -- USER.md -------------------------------------------------------------
 
     def read_user(self) -> str:
-        return self.read_file(self.user_file)
+        content = self.read_file(self.user_file)
+        trace_emit("memory.read", key="USER", bytes=len(content))
+        return content
 
     def write_user(self, content: str) -> None:
         self.user_file.write_text(content, encoding="utf-8")
+        trace_emit("memory.write", key="USER", bytes=len(content))
 
     # -- context injection (used by context.py) ------------------------------
 
@@ -228,6 +238,7 @@ class MemoryStore:
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._cursor_file.write_text(str(cursor), encoding="utf-8")
+        trace_emit("memory.write", key="history", bytes=len(record["content"]), cursor=cursor)
         return cursor
 
     def _next_cursor(self) -> int:
@@ -245,7 +256,10 @@ class MemoryStore:
 
     def read_unprocessed_history(self, since_cursor: int) -> list[dict[str, Any]]:
         """Return history entries with cursor > *since_cursor*."""
-        return [e for e in self._read_entries() if e["cursor"] > since_cursor]
+        entries = [e for e in self._read_entries() if e["cursor"] > since_cursor]
+        total_bytes = sum(len(e.get("content") or "") for e in entries)
+        trace_emit("memory.read", key="history", bytes=total_bytes, count=len(entries))
+        return entries
 
     def compact_history(self) -> None:
         """Drop oldest entries if the file exceeds *max_history_entries*."""
