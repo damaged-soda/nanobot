@@ -32,15 +32,17 @@
 
 ### Scope（概述）
 
-- `Commitment` 资源：稳定 id + prose text + 状态 + 审计字段。
-- LLM 工具：`create_commitment` / `revoke_commitment` / `list_commitments`。
-- Prompt builder：cron job 执行时把 active commitments 注入 prompt。
+- `Commitment` **作为 `CronJob` 的一个字段**（不是独立实体）：稳定 id + prose text + 状态 + 审计字段 + verification_history。随 `jobs.json` 读写，旧 job 默认空 list。
+- LLM 工具：`create_commitment` / `revoke_commitment` / `list_commitments`，统一通过 `CronService` 的 CRUD 方法操作。
+- Prompt builder：cron job 执行时把该 job 的 active commitments 注入 `on_cron_job` 构造的 prompt。
 - Simulate 机制：contextvar + 轻量 recorder，只在 `MessageTool` 的 send path 拦截；其他路径零改动。
 - `simulate_job_run` 工具：LLM 可在 turn 内调用，跑完整 job 执行链路但真实发送被拦截，返回 outputs + verdicts。
 - Verification helper：独立 LLM 调用，判决 (evidence, claim)。
 - Trace 新 kind：`commitment.created` / `commitment.revoked` / `job.simulated` / `verification.completed`。
 
-**刻意不做**：不改真 cron 的投递行为（Phase 2）；不 mock 时间；不做 intent 类型层（验证不需要）。详见 PLAN。
+**对称状态**：同一条用户意图，一次说完（"每天发新闻，不要神经科学"）和分两次说（"每天发新闻" → "不要神经科学"）落成同一份 job 数据结构。
+
+**刻意不做**：不改真 cron 的投递行为（Phase 2）；不 mock 时间；不做 commitment 毕业 / 合并进 `payload.message` 的自动机制（Phase 2）；不做 intent 类型层（验证不需要）。详见 PLAN。
 
 ### 北极星
 
@@ -54,7 +56,7 @@
 ### Exit criteria
 
 - 北极星场景在 CLI 下跑通（集成测试）。
-- Commitment store 在进程重启后仍可读。
+- Commitments 随 jobs.json 持久化，进程重启后仍可读；对称状态保证成立。
 - MessageTool 在 simulate 下不触达真 channel（recorder 有捕获，真 send 计数为 0）。
 - Trace 能完整串起"改承诺 → simulate → verify"链路，trace_id 贯穿。
 
@@ -69,6 +71,7 @@
 - 真 cron 触发时**自动**走 pre-delivery simulate + verify；verdict fail 则阻断投递或降级（具体策略 PLAN 时再定）。
 - System prompt / skill 推动 LLM 在修改 commitment 后**习惯性**调用 simulate，不再靠它主动想起来。
 - Verification 历史持久化并喂回下一轮 context，LLM 能看到"这条 commitment 过往兑现统计"。
+- **毕业机制**：稳定的 commitment（如连续 N 次 pass）按策略合并进 `payload.message`，从 active 列表移除（标记 `status: merged`），降低每轮 verification 成本。自动 / 半自动 / 手动策略需实测 α 后定。
 - 失败后的自动迭代循环（LLM 改 → 再 simulate → 通过为止），可能需要最小的 "LLM-as-loop" 辅助结构。
 
 启动时机：α 在真实使用里跑一段时间，明确出 verdict 正确率、commitment 形态、simulate 的副作用边界，再写 β 的 PLAN。

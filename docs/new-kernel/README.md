@@ -7,7 +7,7 @@
 **保留 nanobot shell，把 runtime kernel 演进为可观测、可仿真、可自验证的形态。**
 
 - `shell`：用户可见的产品外壳，包括 CLI、gateway、channel 适配、provider、workspace、tool、skill。这部分继续跟随上游，不做重写。
-- `kernel`：真正决定系统如何运行的内核，包括观测、仿真、承诺存储、验证循环。这部分是 fork 的重做对象。
+- `kernel`：真正决定系统如何运行的内核，包括观测、仿真、承诺结构、验证循环。这部分是 fork 的重做对象。
 
 ## 为什么需要这个 fork
 
@@ -25,7 +25,7 @@
 
 ## 核心概念
 
-- **Commitment**：用户（或 LLM 推断）交付的持久规则，如 "briefing 不要神经科学"。内容是 prose，**外壳结构化**（id / job_id / status / verification_history / ...）。
+- **Commitment**：用户（或 LLM 推断）交付的持久规则，如 "briefing 不要神经科学"。内容是 prose，**外壳结构化**（id / status / verification_history / ...），作为所属 `CronJob` 的一个字段存在，随 `jobs.json` 持久化——保证同一意图不会因为"一次说完"还是"分批说"落成不同形态。
 - **Simulate**：一次完整的 job 执行复刻，真实发送被拦截成 recorder 捕获，其他路径照常跑。LLM 可在 turn 内调用，不需要等真 cron。
 - **Verification**：一次独立 LLM 调用（无 session、无工具），判决 `(evidence, claim)` 是否一致。给 simulate 提供自评能力，也能在真 cron 投递后事后复盘。
 
@@ -40,7 +40,7 @@ Phase 0 的 trace 格式同时是未来 event log / replay 的载体，投入不
 ## 阶段概览
 
 - **Phase 0（已完成）**：observability scaffold。trace 格式、emit API、六类边界观测全部到位。
-- **Phase 1（当前）**：承诺资源化 + Simulate。Commitment 存储 + LLM 工具 + prompt 注入 + simulate 机制 + verification helper。
+- **Phase 1（当前）**：承诺资源化 + Simulate。Commitment 作为 CronJob 字段 + LLM 工具 + prompt 注入 + simulate 机制 + verification helper。
 - **Phase 2（待启动）**：Enforcement + 自动迭代。真 cron 自动走 pre-delivery verify；LLM 习惯性 simulate；失败自动迭代。
 - **Later（frozen）**：Context compiler 完整版、mock time、更多资源化、分布式等。等 Phase 1 / 2 走完再评估。
 
