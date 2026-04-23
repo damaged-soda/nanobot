@@ -1,13 +1,13 @@
-# nanobot 新内核改造文档
+# nanobot runtime 演进文档
 
-这个目录是 nanobot fork 的改造控制面。不替代根目录 `README.md`，也不替代 `docs/` 下的用户文档。
+这个目录是 nanobot fork 的 runtime 演进控制面。不替代根目录 `README.md`，也不替代 `docs/` 下的用户文档。
 
 ## 一句话定位
 
-**保留 nanobot shell，把 runtime kernel 演进为可观测、可仿真、可自验证的形态。**
+**保留 nanobot shell，把 runtime 演进为可观测、可仿真、可自验证的形态。**
 
 - `shell`：用户可见的产品外壳，包括 CLI、gateway、channel 适配、provider、workspace、tool、skill。这部分继续跟随上游，不做重写。
-- `kernel`：真正决定系统如何运行的内核，包括观测、仿真、承诺结构、验证循环。这部分是 fork 的重做对象。
+- `runtime`：真正决定系统如何运行的那一层，包括观测、仿真、承诺结构、验证循环。这部分是 fork 的重做对象。
 
 ## 为什么需要这个 fork
 
