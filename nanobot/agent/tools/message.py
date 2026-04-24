@@ -102,11 +102,21 @@ class MessageTool(Tool):
             } if message_id else {},
         )
 
+        # Simulate 陷阱点：有 recorder 就记一笔并跳过真 send。
+        # 保持 `_sent_in_turn` 语义不变，确保 simulate 下游 on_cron_job 的
+        # "是否又走 bus 额外投递一次"判断和 live 结构一致。
+        from nanobot.simulate.recorder import current_recorder
+        recorder = current_recorder()
+
         try:
-            await self._send_callback(msg)
+            if recorder is not None:
+                recorder.record(msg)
+            else:
+                await self._send_callback(msg)
             if channel == self._default_channel and chat_id == self._default_chat_id:
                 self._sent_in_turn = True
             media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            suffix = " (simulated)" if recorder is not None else ""
+            return f"Message sent to {channel}:{chat_id}{media_info}{suffix}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
