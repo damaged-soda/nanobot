@@ -18,6 +18,11 @@ from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import AgentRunSpec, AgentRunner
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.commitment import (
+    CreateCommitmentTool,
+    ListCommitmentsTool,
+    RevokeCommitmentTool,
+)
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -287,6 +292,11 @@ class AgentLoop:
             self.tools.register(
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
             )
+            # Commitment 工具：让 LLM 对已有 cron job 的规则做结构化修改，
+            # 替代"往 memory.md 写规则"那条会丢失的软路径。
+            self.tools.register(CreateCommitmentTool(self.cron_service))
+            self.tools.register(RevokeCommitmentTool(self.cron_service))
+            self.tools.register(ListCommitmentsTool(self.cron_service))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
