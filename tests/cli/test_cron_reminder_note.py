@@ -1,12 +1,15 @@
-"""Phase 1 Step 4 — `_build_cron_reminder_note` 的模板快照。
+"""Phase 1 Step 4 — `build_cron_reminder_note` 的模板快照。
 
 cron 真跑时 prompt 的构造是 commitments 进 LLM 的唯一入口，模板变化会悄悄
 改变 LLM 对规则的感知方式，所以用精确字符串断言锁住格式。
+
+Step 7 时 helper 从 cli/commands.py 提到 cron/prompt.py 共享给 simulate
+路径——live 和 simulate 必须用同一个构造函数才能"结构同构"。
 """
 
 from __future__ import annotations
 
-from nanobot.cli.commands import _build_cron_reminder_note
+from nanobot.cron.prompt import build_cron_reminder_note as _build_cron_reminder_note
 from nanobot.cron.types import (
     Commitment,
     CronJob,

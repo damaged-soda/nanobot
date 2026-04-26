@@ -24,6 +24,7 @@ from nanobot.agent.tools.commitment import (
     RevokeCommitmentTool,
 )
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.simulate import SimulateJobRunTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
@@ -297,6 +298,14 @@ class AgentLoop:
             self.tools.register(CreateCommitmentTool(self.cron_service))
             self.tools.register(RevokeCommitmentTool(self.cron_service))
             self.tools.register(ListCommitmentsTool(self.cron_service))
+            # Simulate 工具：让 LLM 在改完 commitment 后立即"试跑"对应 job，
+            # 不发真消息，把 outputs 喂给 verify 拿到逐条判决。
+            self.tools.register(SimulateJobRunTool(
+                cron_service=self.cron_service,
+                process_direct=self.process_direct,
+                provider=self.provider,
+                model=self.model,
+            ))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
